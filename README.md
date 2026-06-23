@@ -57,6 +57,7 @@ a non-interactive CI runner or a redirected-input session.
 | `Read-SecretPlain` | Masked single-entry secret prompt (re-entering a known secret). |
 | `Read-SecretPlainConfirm` | Masked secret prompt with retype-to-confirm (setting a new secret). |
 | `Invoke-WithSpinner` | Runs an external executable in the background with an animated spinner, returns its exit code. |
+| `Invoke-ScriptBlockWithSpinner` | Same idea, for a PowerShell scriptblock instead of an executable — e.g. a download. Returns the scriptblock's output, throws on error. |
 | `Write-Context` / `Write-Section` | Clears the screen and draws the title/hint/context panel. Called internally by every prompt above; exported in case you want to draw a screen with no input on it (e.g. a "Step 3 of 5" banner). |
 | `ConvertTo-UiOptions` | Normalizes strings/hashtables/objects into a uniform `@{Label;Value}` list. Used internally by every select/checkbox function. |
 | `ToSafeName` | Lowercases and strips a string down to `[a-z0-9-]` — handy for turning free-text input into a safe identifier. |

@@ -1025,6 +1025,67 @@ function Invoke-WithSpinner {
   return [int]$result.ExitCode
 }
 
+<#
+.SYNOPSIS
+    Runs a scriptblock in the background while animating a spinner on the
+    current console line, then returns its result.
+.DESCRIPTION
+    Generalization of Invoke-WithSpinner for arbitrary PowerShell code instead
+    of an external executable — e.g. a multi-step Invoke-WebRequest +
+    Expand-Archive sequence. ScriptBlock runs in a background job, which does
+    NOT have access to the caller's variables, functions, or imported
+    modules — pass everything it needs through ArgumentList and stick to
+    built-in cmdlets/.NET types inside it. Re-throws ScriptBlock's error (if
+    any) so the caller's own try/catch handles it exactly as if the code had
+    run inline.
+.PARAMETER Message
+    Text shown next to the spinner while ScriptBlock runs.
+.PARAMETER ScriptBlock
+    The code to run in the background. Receives ArgumentList as its param()
+    values, in order.
+.PARAMETER ArgumentList
+    Values passed positionally into ScriptBlock.
+.EXAMPLE
+    PS> Invoke-ScriptBlockWithSpinner -Message "kubectl: Downloading v1.29.0..." -ScriptBlock {
+            param($Url, $OutFile)
+            Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing
+        } -ArgumentList @($url, $path)
+.OUTPUTS
+    Whatever ScriptBlock returns via its own output stream. Throws if
+    ScriptBlock raised an error.
+#>
+function Invoke-ScriptBlockWithSpinner {
+  [CmdletBinding()]
+  param(
+    [string]$Message,
+    [Parameter(Mandatory)][scriptblock]$ScriptBlock,
+    [object[]]$ArgumentList = @()
+  )
+
+  $job = Start-Job -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
+
+  $frames = @('|', '/', '-', '\')
+  $i = 0
+  try {
+    while ($job.State -eq 'Running') {
+      [Console]::Write("`r  $($frames[$i % 4]) $Message")
+      $i++
+      Start-Sleep -Milliseconds 150
+    }
+  } finally {
+    if ($job.State -eq 'Running') { Stop-Job -Job $job }
+    [Console]::Write("`r" + (" " * ($Message.Length + 6)) + "`r")
+  }
+
+  $failed       = $job.State -eq 'Failed'
+  $errorReason  = $job.ChildJobs[0].JobStateInfo.Reason
+  $result       = Receive-Job -Job $job -Wait -ErrorAction SilentlyContinue
+  Remove-Job -Job $job -Force
+
+  if ($failed) { throw $errorReason }
+  return $result
+}
+
 Export-ModuleMember -Function @(
   'ToSafeName'
   'Write-Context'
@@ -1039,4 +1100,5 @@ Export-ModuleMember -Function @(
   'Read-SecretPlain'
   'Read-SecretPlainConfirm'
   'Invoke-WithSpinner'
+  'Invoke-ScriptBlockWithSpinner'
 )
