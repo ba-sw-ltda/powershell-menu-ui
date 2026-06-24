@@ -429,7 +429,13 @@ function Read-SelectValue {
       Start-Sleep -Milliseconds 150
     }
     [Console]::Write("`r" + (" " * ($LoadingMessage.Length + 6)) + "`r")
-    $loaded = Receive-Job $job -Wait; Remove-Job $job -Force
+    # Suppress Progress while receiving — see Invoke-ScriptBlockWithSpinner's
+    # Receive-Job for why an unsuppressed replay can leave a stuck progress
+    # bar on screen if Loader's own code ever calls Write-Progress.
+    $prevProgressPreference = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    try { $loaded = Receive-Job $job -Wait } finally { $ProgressPreference = $prevProgressPreference }
+    Remove-Job $job -Force
     if ($loaded) { $Options = $loaded }
 
     # Re-calculate default index based on DefaultValue after Loader replaced options
@@ -1010,7 +1016,12 @@ function Invoke-WithSpinner {
     [Console]::Write("`r" + (" " * ($Message.Length + 6)) + "`r")
   }
 
-  $result = Receive-Job -Job $job -Wait
+  # Suppress Progress while receiving — see Invoke-ScriptBlockWithSpinner's
+  # Receive-Job for why an unsuppressed replay can leave a stuck progress
+  # bar on screen if Executable's output is ever misread as a progress record.
+  $prevProgressPreference = $ProgressPreference
+  $ProgressPreference = 'SilentlyContinue'
+  try { $result = Receive-Job -Job $job -Wait } finally { $ProgressPreference = $prevProgressPreference }
   Remove-Job -Job $job -Force
 
   if ($null -ne $result.Output) {
@@ -1050,6 +1061,9 @@ function Invoke-WithSpinner {
             param($Url, $OutFile)
             Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing
         } -ArgumentList @($url, $path)
+    # If ScriptBlock reports Write-Progress (Invoke-WebRequest does), its
+    # latest status — e.g. "Downloaded: 2.7 MB of 15.6 MB" — is appended to
+    # Message automatically.
 .OUTPUTS
     Whatever ScriptBlock returns via its own output stream. Throws if
     ScriptBlock raised an error.
@@ -1066,20 +1080,46 @@ function Invoke-ScriptBlockWithSpinner {
 
   $frames = @('|', '/', '-', '\')
   $i = 0
+  $maxLen = 0
   try {
     while ($job.State -eq 'Running') {
-      [Console]::Write("`r  $($frames[$i % 4]) $Message")
+      $line = "  $($frames[$i % 4]) $Message"
+
+      # Surface ScriptBlock's own Write-Progress output (Invoke-WebRequest
+      # reports download progress this way) — the job's Progress stream is
+      # the only thing that crosses the background-job boundary live.
+      $progress = $job.ChildJobs[0].Progress
+      if ($progress.Count -gt 0) {
+        $last = $progress[$progress.Count - 1]
+        if ($last.StatusDescription)        { $line += "  $($last.StatusDescription)" }
+        elseif ($last.PercentComplete -ge 0) { $line += "  ($($last.PercentComplete)%)" }
+      }
+
+      $maxLen = [Math]::Max($maxLen, $line.Length)
+      [Console]::Write("`r$line" + (" " * ($maxLen - $line.Length)))
       $i++
       Start-Sleep -Milliseconds 150
     }
   } finally {
     if ($job.State -eq 'Running') { Stop-Job -Job $job }
-    [Console]::Write("`r" + (" " * ($Message.Length + 6)) + "`r")
+    [Console]::Write("`r" + (" " * ($maxLen + 6)) + "`r")
   }
 
-  $failed       = $job.State -eq 'Failed'
-  $errorReason  = $job.ChildJobs[0].JobStateInfo.Reason
-  $result       = Receive-Job -Job $job -Wait -ErrorAction SilentlyContinue
+  $failed      = $job.State -eq 'Failed'
+  $errorReason = $job.ChildJobs[0].JobStateInfo.Reason
+
+  # Receive-Job replays every buffered stream into THIS session, including
+  # Progress — without suppressing it here, any not-yet-"Completed" progress
+  # record the job recorded (Invoke-WebRequest, Expand-Archive, Remove-Item
+  # all call Write-Progress) gets handed to the host's progress UI and can
+  # stick around on screen since nothing ever sends its "Completed" signal.
+  $prevProgressPreference = $ProgressPreference
+  $ProgressPreference = 'SilentlyContinue'
+  try {
+    $result = Receive-Job -Job $job -Wait -ErrorAction SilentlyContinue
+  } finally {
+    $ProgressPreference = $prevProgressPreference
+  }
   Remove-Job -Job $job -Force
 
   if ($failed) { throw $errorReason }
