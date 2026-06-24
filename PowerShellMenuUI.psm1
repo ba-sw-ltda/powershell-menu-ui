@@ -1119,6 +1119,12 @@ function Invoke-ScriptBlockWithSpinner {
         $last = $progress[$progress.Count - 1]
         if ($last.StatusDescription)        { $line += "  $($last.StatusDescription)" }
         elseif ($last.PercentComplete -ge 0) { $line += "  ($($last.PercentComplete)%)" }
+      } else {
+        # Nothing reported yet — ScriptBlock is still starting up (e.g. DNS
+        # lookup / TLS handshake before Invoke-WebRequest's first progress
+        # record). Without this the line just sits on $Message unchanged,
+        # which looks identical to a hang.
+        $line += "  Initializing..."
       }
 
       $width = Get-ConsoleWidth
