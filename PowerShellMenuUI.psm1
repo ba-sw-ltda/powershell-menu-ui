@@ -423,12 +423,19 @@ function Read-SelectValue {
     Write-Host ""
 
     $frames = @('|','/','-','\'); $fi = 0
+    $loaderMaxLen = 0
     $job = Start-Job -ScriptBlock $Loader -ArgumentList (@($env:PATH) + $LoaderArgs)
     while ($job.State -eq 'Running') {
-      [Console]::Write("`r  $($frames[$fi++ % 4]) $LoadingMessage")
+      $loaderLine = "  $($frames[$fi++ % 4]) $LoadingMessage"
+      $loaderWidth = Get-ConsoleWidth
+      if ($loaderLine.Length -gt $loaderWidth) { $loaderLine = $loaderLine.Substring(0, $loaderWidth - 3) + "..." }
+      $loaderMaxLen = [Math]::Max($loaderMaxLen, $loaderLine.Length)
+      [Console]::Write("`r$loaderLine" + (" " * ($loaderMaxLen - $loaderLine.Length)))
       Start-Sleep -Milliseconds 150
     }
-    [Console]::Write("`r" + (" " * ($LoadingMessage.Length + 6)) + "`r")
+    # See Invoke-WithSpinner's matching clear for why this is capped at the
+    # console width instead of just $loaderMaxLen + 6.
+    [Console]::Write("`r" + (" " * [Math]::Min($loaderMaxLen + 6, (Get-ConsoleWidth))) + "`r")
     # Suppress Progress while receiving — see Invoke-ScriptBlockWithSpinner's
     # Receive-Job for why an unsuppressed replay can leave a stuck progress
     # bar on screen if Loader's own code ever calls Write-Progress.
@@ -978,6 +985,15 @@ function Read-SecretPlainConfirm {
 .OUTPUTS
     System.Int32 — the exit code of Executable.
 #>
+# Private helper behind every spinner loop below — current terminal width,
+# with a sane fallback when it can't be determined (e.g. redirected output).
+# `\r` only rewinds the CURRENT row, so a line that wrapped onto a second row
+# never gets fully cleared on the next redraw — every spinner line must stay
+# within this width. Not exported.
+function Get-ConsoleWidth {
+  try { [Math]::Max(20, [Console]::WindowWidth - 1) } catch { 119 }
+}
+
 function Invoke-WithSpinner {
   [CmdletBinding()]
   param(
@@ -1005,15 +1021,25 @@ function Invoke-WithSpinner {
 
   $frames = @('|', '/', '-', '\')
   $i = 0
+  $maxLen = 0
   try {
     while ($job.State -eq 'Running') {
-      [Console]::Write("`r  $($frames[$i % 4]) $Message")
+      $line = "  $($frames[$i % 4]) $Message"
+      $width = Get-ConsoleWidth
+      if ($line.Length -gt $width) { $line = $line.Substring(0, $width - 3) + "..." }
+      $maxLen = [Math]::Max($maxLen, $line.Length)
+      [Console]::Write("`r$line" + (" " * ($maxLen - $line.Length)))
       $i++
       Start-Sleep -Milliseconds 150
     }
   } finally {
     if ($job.State -eq 'Running') { Stop-Job -Job $job }
-    [Console]::Write("`r" + (" " * ($Message.Length + 6)) + "`r")
+    # Cap at the console width too — $maxLen can equal Get-ConsoleWidth
+    # exactly (the line-truncation above stops it from exceeding that), so
+    # the un-capped "+6" margin used to push the clear itself past the
+    # width and wrap onto a second row, leaving that row's blank padding
+    # behind as a stray empty line once the cursor returns to column 0.
+    [Console]::Write("`r" + (" " * [Math]::Min($maxLen + 6, (Get-ConsoleWidth))) + "`r")
   }
 
   # Suppress Progress while receiving — see Invoke-ScriptBlockWithSpinner's
@@ -1095,6 +1121,8 @@ function Invoke-ScriptBlockWithSpinner {
         elseif ($last.PercentComplete -ge 0) { $line += "  ($($last.PercentComplete)%)" }
       }
 
+      $width = Get-ConsoleWidth
+      if ($line.Length -gt $width) { $line = $line.Substring(0, $width - 3) + "..." }
       $maxLen = [Math]::Max($maxLen, $line.Length)
       [Console]::Write("`r$line" + (" " * ($maxLen - $line.Length)))
       $i++
@@ -1102,7 +1130,9 @@ function Invoke-ScriptBlockWithSpinner {
     }
   } finally {
     if ($job.State -eq 'Running') { Stop-Job -Job $job }
-    [Console]::Write("`r" + (" " * ($maxLen + 6)) + "`r")
+    # See Invoke-WithSpinner's matching clear for why this is capped at the
+    # console width instead of just $maxLen + 6.
+    [Console]::Write("`r" + (" " * [Math]::Min($maxLen + 6, (Get-ConsoleWidth))) + "`r")
   }
 
   $failed      = $job.State -eq 'Failed'
