@@ -53,6 +53,7 @@ a non-interactive CI runner or a redirected-input session.
 | `Read-MultiSelectValues` | Checkbox menu — Space toggles, Enter confirms. For "pick any number of these". |
 | `Read-ComponentSelectionScreen` | Two-level picker: toggleable groups containing checkboxes and/or radio sub-choices (e.g. "Ingress" group → NGINX vs. Traefik radio underneath it). |
 | `Read-YesNo` | Two-choice Yes/No menu, returns a bool. |
+| `Confirm-RetryOrExit` | "Try again or cancel?" after a recoverable failure — exits the process on cancel, otherwise returns so the caller's loop retries. |
 | `Read-Plain` | Free-text prompt with an optional default. |
 | `Read-SecretPlain` | Masked single-entry secret prompt (re-entering a known secret). |
 | `Read-SecretPlainConfirm` | Masked secret prompt with retype-to-confirm (setting a new secret). |

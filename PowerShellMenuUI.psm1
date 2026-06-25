@@ -517,6 +517,37 @@ function Read-YesNo {
 
 <#
 .SYNOPSIS
+    Asks "Try again or cancel?" after a recoverable failure; exits the
+    process if the user cancels.
+.DESCRIPTION
+    For failures worth retrying without restarting the whole script —
+    a typo'd password, an expired device-login code, a transient network
+    blip, a cluster that's still coming up. Only returns when the user
+    chose to retry (always $true); there's no "continue without
+    retrying" path, since this is for handling failures, not optional
+    steps. Callers wrap their attempt in a loop:
+    `do { ... } while ($failed -and (Confirm-RetryOrExit -Reason "..."))`.
+.PARAMETER Reason
+    What failed, shown as the question title — e.g. "Azure login failed"
+    or "SSH authentication failed — check credentials and server address".
+.EXAMPLE
+    PS> do {
+            $exitCode = Invoke-WithSpinner -Message "..." -Executable "az" -Arguments @("login")
+        } while ($exitCode -ne 0 -and (Confirm-RetryOrExit -Reason "Azure login failed"))
+.OUTPUTS
+    System.Boolean — always $true (the process exits instead of returning $false).
+#>
+function Confirm-RetryOrExit {
+  param([Parameter(Mandatory)][string]$Reason)
+
+  $retry = Read-YesNo -Title $Reason `
+    -DefaultYes $true -YesLabel "Try again" -NoLabel "Cancel installation"
+  if (-not $retry) { exit 1 }
+  return $true
+}
+
+<#
+.SYNOPSIS
     Checkbox-style menu — Space toggles an item, Enter confirms the whole set.
 .DESCRIPTION
     Renders Options as a vertical list of [ ]/[x] checkboxes. Use this when the
@@ -1170,6 +1201,7 @@ Export-ModuleMember -Function @(
   'Read-SelectIndex'
   'Read-SelectValue'
   'Read-YesNo'
+  'Confirm-RetryOrExit'
   'Read-MultiSelectValues'
   'Read-ComponentSelectionScreen'
   'Read-Plain'
