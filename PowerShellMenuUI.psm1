@@ -665,13 +665,20 @@ function Read-MultiSelectValues {
 .PARAMETER Sections
     Array of @{ Label = "<section name>"; Items = @(...) }. Each Items entry is
     one of:
-      @{ Label; Value; Type = "check";  Default }                        — standalone checkbox
-      @{ Label; Value; Type = "group";  Default; Children = @(...) }     — toggleable group
-      @{ Label; Value; Type = "radio"; RadioGroup; Default }             — inside a group's Children;
-                                                                            exactly one per RadioGroup
-                                                                            ends up checked
+      @{ Label; Value; Type = "check";  Default; Requires }                  — standalone checkbox
+      @{ Label; Value; Type = "group";  Default; Children = @(...); Requires } — toggleable group
+      @{ Label; Value; Type = "radio"; RadioGroup; Default; Requires }       — inside a group's Children;
+                                                                                exactly one per RadioGroup
+                                                                                ends up checked
     A section with only one Items entry skips printing its own Label as a
     separator (it would be redundant noise above a single row).
+
+    Requires (optional, on any check/radio/group item): values of other items
+    that get force-checked and locked (can't be manually toggled) for as long
+    as this item is itself checked and active — a radio child's Requires only
+    takes effect while its parent group is checked. Rendered checked + DarkGray.
+    A locked item reverts to its own underlying state the moment nothing
+    requires it anymore.
 .PARAMETER ContextTitle
     Forwarded to Write-Context — see Write-Context for ContextTitle/ContextHint/
     ContextCurrent/MaskKeys.
@@ -679,7 +686,7 @@ function Read-MultiSelectValues {
     PS> Read-ComponentSelectionScreen -Title "Select components" -Sections @(
             @{ Label = "Ingress & LB"; Items = @(
                 @{ Label = "Ingress"; Value = "ingress"; Type = "group"; Default = $true; Children = @(
-                    @{ Label = "NGINX";    Value = "nginx";    Type = "radio"; RadioGroup = "ingress"; Default = $true }
+                    @{ Label = "NGINX";    Value = "nginx";    Type = "radio"; RadioGroup = "ingress"; Default = $true; Requires = @("metallb") }
                     @{ Label = "Traefik";  Value = "traefik";  Type = "radio"; RadioGroup = "ingress"; Default = $false }
                 )}
                 @{ Label = "MetalLB"; Value = "metallb"; Type = "check"; Default = $true }
@@ -687,8 +694,9 @@ function Read-MultiSelectValues {
         )
     # -> @{ ingress = $true; nginx = $true; traefik = $false; metallb = $true }
 .OUTPUTS
-    System.Collections.Hashtable mapping each item's Value to $true/$false, or
-    $null if the user pressed Escape.
+    System.Collections.Hashtable mapping each item's Value to $true/$false
+    (Requires-locked values included as $true), or $null if the user pressed
+    Escape.
 #>
 function Read-ComponentSelectionScreen {
   param(
@@ -709,7 +717,7 @@ function Read-ComponentSelectionScreen {
     $flat.Add(@{ Kind="sep"; Label=$sec.Label }) | Out-Null
     foreach ($item in @($sec.Items)) {
       if ($item.Type -eq "group") {
-        $flat.Add(@{ Kind="group"; Label=$item.Label; Value=$item.Value; Checked=[bool]$item.Default }) | Out-Null
+        $flat.Add(@{ Kind="group"; Label=$item.Label; Value=$item.Value; Checked=[bool]$item.Default; Requires=@($item['Requires']) }) | Out-Null
         foreach ($child in @($item.Children)) {
           $flat.Add(@{
             Kind        = "radio"
@@ -718,10 +726,11 @@ function Read-ComponentSelectionScreen {
             RadioGroup  = $child.RadioGroup
             Checked     = [bool]$child.Default
             ParentValue = $item.Value
+            Requires    = @($child['Requires'])
           }) | Out-Null
         }
       } else {
-        $flat.Add(@{ Kind=$item.Type; Label=$item.Label; Value=$item.Value; Checked=[bool]$item.Default }) | Out-Null
+        $flat.Add(@{ Kind=$item.Type; Label=$item.Label; Value=$item.Value; Checked=[bool]$item.Default; Requires=@($item['Requires']) }) | Out-Null
       }
     }
   }
@@ -742,11 +751,21 @@ function Read-ComponentSelectionScreen {
     })
   }
 
+  # Values forced on by some other currently-active+checked item's Requires list.
+  # "Active" excludes a radio child whose parent group is unchecked — e.g.
+  # unchecking the whole parent group must release whatever its (still
+  # internally Checked, just hidden) radio child required.
+  function Get-ForcedValues($f) {
+    $active = Get-Nav $f
+    @($active | Where-Object { $_.Checked -and $_.Requires } | ForEach-Object { $_.Requires } | Select-Object -Unique)
+  }
+
   $cursor = 0
   $done   = $false
 
   while (-not $done) {
-    $nav = Get-Nav $flat
+    $nav    = Get-Nav $flat
+    $forced = Get-ForcedValues $flat
     if ($cursor -ge $nav.Count) { $cursor = [Math]::Max(0, $nav.Count - 1) }
 
     Write-Context -Title $ContextTitle -Hint $ContextHint -Current $ContextCurrent -MaskKeys $MaskKeys
@@ -789,25 +808,30 @@ function Read-ComponentSelectionScreen {
 
       $isFocused = ($navPos -eq $cursor)
       $arrow     = if ($isFocused) { ">" } else { " " }
+      $isLocked  = $forced -contains $item.Value
+      $effectiveChecked = $item.Checked -or $isLocked
 
       switch ($item.Kind) {
         "group" {
-          $mark = if ($item.Checked) { "[X]" } else { "[ ]" }
+          $mark = if ($effectiveChecked) { "[X]" } else { "[ ]" }
           $line = "$arrow $mark $($item.Label)"
-          if ($isFocused) { Write-Host $line -ForegroundColor Green }
-          else            { Write-Host $line }
+          if ($isLocked)       { Write-Host $line -ForegroundColor DarkGray }
+          elseif ($isFocused)  { Write-Host $line -ForegroundColor Green }
+          else                 { Write-Host $line }
         }
         "check" {
-          $mark = if ($item.Checked) { "[X]" } else { "[ ]" }
+          $mark = if ($effectiveChecked) { "[X]" } else { "[ ]" }
           $line = "$arrow $mark $($item.Label)"
-          if ($isFocused) { Write-Host $line -ForegroundColor Green }
-          else            { Write-Host $line }
+          if ($isLocked)       { Write-Host $line -ForegroundColor DarkGray }
+          elseif ($isFocused)  { Write-Host $line -ForegroundColor Green }
+          else                 { Write-Host $line }
         }
         "radio" {
-          $mark = if ($item.Checked) { "(*)" } else { "( )" }
+          $mark = if ($effectiveChecked) { "(*)" } else { "( )" }
           $line = "$arrow     $mark $($item.Label)"
-          if ($isFocused) { Write-Host $line -ForegroundColor Green }
-          else            { Write-Host $line -ForegroundColor Gray }
+          if ($isLocked)       { Write-Host $line -ForegroundColor DarkGray }
+          elseif ($isFocused)  { Write-Host $line -ForegroundColor Green }
+          else                 { Write-Host $line -ForegroundColor Gray }
         }
       }
       $navPos++
@@ -820,17 +844,21 @@ function Read-ComponentSelectionScreen {
       'DownArrow' { $cursor = [Math]::Min($nav.Count - 1, $cursor + 1) }
       'Spacebar'  {
         $item = $nav[$cursor]
-        switch ($item.Kind) {
-          "group" {
-            $item.Checked = -not $item.Checked
-            $nav2 = Get-Nav $flat
-            if ($cursor -ge $nav2.Count) { $cursor = [Math]::Max(0, $nav2.Count - 1) }
-          }
-          "check" { $item.Checked = -not $item.Checked }
-          "radio" {
-            $flat | Where-Object { $_.Kind -eq "radio" -and $_.RadioGroup -eq $item.RadioGroup } |
-              ForEach-Object { $_.Checked = $false }
-            $item.Checked = $true
+        if ($forced -contains $item.Value) {
+          # Locked by another checked item's Requires — Space is a no-op.
+        } else {
+          switch ($item.Kind) {
+            "group" {
+              $item.Checked = -not $item.Checked
+              $nav2 = Get-Nav $flat
+              if ($cursor -ge $nav2.Count) { $cursor = [Math]::Max(0, $nav2.Count - 1) }
+            }
+            "check" { $item.Checked = -not $item.Checked }
+            "radio" {
+              $flat | Where-Object { $_.Kind -eq "radio" -and $_.RadioGroup -eq $item.RadioGroup } |
+                ForEach-Object { $_.Checked = $false }
+              $item.Checked = $true
+            }
           }
         }
       }
@@ -839,12 +867,14 @@ function Read-ComponentSelectionScreen {
     }
   }
 
-  # Build result: group/check values + radio values (only from checked groups)
+  # Build result: group/check values + radio values (only from checked groups),
+  # with Requires-forced values folded in as $true regardless of their own Checked.
   $result = @{}
   $checkedGroups = @($flat | Where-Object { $_.Kind -eq "group" -and $_.Checked } | ForEach-Object { $_.Value })
   $flat | Where-Object { $_.Kind -in @("group", "check") } | ForEach-Object { $result[$_.Value] = $_.Checked }
   $flat | Where-Object { $_.Kind -eq "radio" -and $checkedGroups -contains $_.ParentValue } |
     ForEach-Object { $result[$_.Value] = $_.Checked }
+  foreach ($value in (Get-ForcedValues $flat)) { $result[$value] = $true }
   return $result
 }
 
