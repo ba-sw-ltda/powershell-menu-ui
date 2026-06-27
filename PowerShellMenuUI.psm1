@@ -543,6 +543,11 @@ function Confirm-RetryOrExit {
   $retry = Read-YesNo -Title $Reason `
     -DefaultYes $true -YesLabel "Try again" -NoLabel "Cancel installation"
   if (-not $retry) { exit 1 }
+  # Callers go straight back into Invoke-WithSpinner on retry, which draws no
+  # screen of its own (it just writes its spinner line in place) — without
+  # this, the retried attempt's spinner appends right below this question's
+  # leftover "Try again" text instead of looking like a fresh attempt.
+  Clear-Host
   return $true
 }
 
