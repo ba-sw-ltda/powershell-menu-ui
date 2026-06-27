@@ -926,6 +926,14 @@ function Read-Secret {
   )
 
   $sec = Read-Host -AsSecureString $Prompt
+  # On some hosts, Ctrl-C during a masked Read-Host doesn't raise a pipeline-
+  # stopping exception — it just returns $null. Without this check that null
+  # reaches SecureStringToBSTR and throws a cryptic "Value cannot be null.
+  # (Parameter 's')" instead of a message that says what actually happened —
+  # confirmed live, not hypothetical.
+  if ($null -eq $sec) {
+    throw "Cancelled by user (Ctrl-C)"
+  }
   $b = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
   try { return [Runtime.InteropServices.Marshal]::PtrToStringAuto($b) }
   finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b) }
