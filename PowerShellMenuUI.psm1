@@ -1156,6 +1156,65 @@ function Invoke-WithSpinner {
     ScriptBlock raised an error.
 #>
 function Invoke-ScriptBlockWithSpinner {
+  # For ScriptBlocks that never report progress (the common case — a plain
+  # kubectl/CLI call). Plain rotating-glyph spinner only: no "Initializing..."
+  # filler text, since there's nothing for it to lead into — it would just
+  # sit unchanged for the job's entire duration, reading as stuck. Use
+  # Invoke-DownloadWithSpinner instead for ScriptBlocks that do call
+  # Write-Progress (e.g. Invoke-WebRequest downloads).
+  [CmdletBinding()]
+  param(
+    [string]$Message,
+    [Parameter(Mandatory)][scriptblock]$ScriptBlock,
+    [object[]]$ArgumentList = @()
+  )
+
+  $job = Start-Job -ScriptBlock $ScriptBlock -ArgumentList $ArgumentList
+
+  $frames = @('|', '/', '-', '\')
+  $i = 0
+  $maxLen = 0
+  try {
+    while ($job.State -eq 'Running') {
+      $line = "  $($frames[$i % 4]) $Message"
+      $width = Get-ConsoleWidth
+      if ($line.Length -gt $width) { $line = $line.Substring(0, $width - 3) + "..." }
+      $maxLen = [Math]::Max($maxLen, $line.Length)
+      [Console]::Write("`r$line" + (" " * ($maxLen - $line.Length)))
+      $i++
+      Start-Sleep -Milliseconds 150
+    }
+  } finally {
+    if ($job.State -eq 'Running') { Stop-Job -Job $job }
+    # See Invoke-WithSpinner's matching clear for why this is capped at the
+    # console width instead of just $maxLen + 6.
+    [Console]::Write("`r" + (" " * [Math]::Min($maxLen + 6, (Get-ConsoleWidth))) + "`r")
+  }
+
+  $failed      = $job.State -eq 'Failed'
+  $errorReason = $job.ChildJobs[0].JobStateInfo.Reason
+
+  $prevProgressPreference = $ProgressPreference
+  $ProgressPreference = 'SilentlyContinue'
+  try {
+    $result = Receive-Job -Job $job -Wait -ErrorAction SilentlyContinue
+  } finally {
+    $ProgressPreference = $prevProgressPreference
+  }
+  Remove-Job -Job $job -Force
+
+  if ($failed) { throw $errorReason }
+  return $result
+}
+
+function Invoke-DownloadWithSpinner {
+  # For ScriptBlocks that download something and report progress via
+  # Write-Progress (e.g. Invoke-WebRequest). Shows that progress (percentage
+  # or status text) once it starts arriving, and "Initializing..." for as
+  # long as it takes to start (DNS lookup / TLS handshake before the first
+  # progress record) — unlike Invoke-ScriptBlockWithSpinner's plain variant,
+  # a download genuinely *is* still initializing during that window, so the
+  # text is shown for the whole wait, not just the first frame.
   [CmdletBinding()]
   param(
     [string]$Message,
@@ -1172,19 +1231,14 @@ function Invoke-ScriptBlockWithSpinner {
     while ($job.State -eq 'Running') {
       $line = "  $($frames[$i % 4]) $Message"
 
-      # Surface ScriptBlock's own Write-Progress output (Invoke-WebRequest
-      # reports download progress this way) — the job's Progress stream is
-      # the only thing that crosses the background-job boundary live.
+      # Surface ScriptBlock's own Write-Progress output — the job's Progress
+      # stream is the only thing that crosses the background-job boundary live.
       $progress = $job.ChildJobs[0].Progress
       if ($progress.Count -gt 0) {
         $last = $progress[$progress.Count - 1]
         if ($last.StatusDescription)        { $line += "  $($last.StatusDescription)" }
         elseif ($last.PercentComplete -ge 0) { $line += "  ($($last.PercentComplete)%)" }
       } else {
-        # Nothing reported yet — ScriptBlock is still starting up (e.g. DNS
-        # lookup / TLS handshake before Invoke-WebRequest's first progress
-        # record). Without this the line just sits on $Message unchanged,
-        # which looks identical to a hang.
         $line += "  Initializing..."
       }
 
@@ -1197,8 +1251,6 @@ function Invoke-ScriptBlockWithSpinner {
     }
   } finally {
     if ($job.State -eq 'Running') { Stop-Job -Job $job }
-    # See Invoke-WithSpinner's matching clear for why this is capped at the
-    # console width instead of just $maxLen + 6.
     [Console]::Write("`r" + (" " * [Math]::Min($maxLen + 6, (Get-ConsoleWidth))) + "`r")
   }
 
@@ -1239,4 +1291,5 @@ Export-ModuleMember -Function @(
   'Read-SecretPlainConfirm'
   'Invoke-WithSpinner'
   'Invoke-ScriptBlockWithSpinner'
+  'Invoke-DownloadWithSpinner'
 )
